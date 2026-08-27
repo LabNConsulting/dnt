@@ -1,4 +1,4 @@
-"""FRER (IEEE 802.1CB) over transparent Layer 2 bridges."""
+"""Objective 2: FRER (802.1CB) over transparent Layer 2 bridges."""
 
 import re
 
@@ -12,13 +12,11 @@ from munet.mutest.userapi import wait_step
 
 
 def pkt_count(target, pcap, pfilter="", what="frames"):
-    ok, groups = match_step(
-        target,
-        f"tcpdump -nr {pcap} {pfilter} 2>/dev/null | wc -l",
-        match=r"(\d+)",
-        desc=f"Count {what}",
-    )
-    return int(groups[0]) if ok and groups else 0
+    out = step(target, f"tcpdump -nr {pcap} {pfilter} 2>/dev/null | wc -l")
+    m = re.search(r"(\d+)", out)
+    n = int(m.group(1)) if m else 0
+    log("%s: %s", what, n)
+    return n
 
 
 def first_frame(target, pcap, what):
@@ -58,15 +56,15 @@ CAPTURES = [
 
 
 def start_capture(target, iface, tag, pfilter):
-    step(target, f"rm -f /tmp/frer_{tag}.pcap /tmp/frer_{tag}.pid")
+    step(target, f"rm -f /tmp/obj2_{tag}.pcap /tmp/obj2_{tag}.pid")
     step(
         target,
-        f"nohup tcpdump -U -Z root -ni {iface} -w /tmp/frer_{tag}.pcap {pfilter} "
-        f">/tmp/frer_{tag}.log 2>&1 & echo $! > /tmp/frer_{tag}.pid",
+        f"nohup tcpdump -U -Z root -ni {iface} -w /tmp/obj2_{tag}.pcap {pfilter} "
+        f">/tmp/obj2_{tag}.log 2>&1 & echo $! > /tmp/obj2_{tag}.pid",
     )
     wait_step(
         target,
-        f"cat /tmp/frer_{tag}.log",
+        f"cat /tmp/obj2_{tag}.log",
         match=f"listening on {iface}",
         desc=f"tcpdump listening on {iface} for the {tag} capture",
         timeout=15,
@@ -74,10 +72,10 @@ def start_capture(target, iface, tag, pfilter):
 
 
 def stop_capture(target, tag):
-    step(target, f"kill -INT $(cat /tmp/frer_{tag}.pid)")
+    step(target, f"kill -INT $(cat /tmp/obj2_{tag}.pid)")
     wait_step(
         target,
-        f"kill -0 $(cat /tmp/frer_{tag}.pid) 2>/dev/null; echo rc=$?",
+        f"kill -0 $(cat /tmp/obj2_{tag}.pid) 2>/dev/null; echo rc=$?",
         match="rc=1",
         desc=f"The {tag} capture flushed to disk and stopped",
         timeout=15,
@@ -191,23 +189,23 @@ for target, _, tag, _ in CAPTURES:
 section("What is actually on the wire, surveyed before anything is asserted")
 
 total1 = pkt_count(
-    "bridge1A", "/tmp/frer_path1.pcap", "", "every frame captured on Path 1"
+    "bridge1A", "/tmp/obj2_path1.pcap", "", "every frame captured on Path 1"
 )
 total2 = pkt_count(
-    "bridge2A", "/tmp/frer_path2.pcap", "", "every frame captured on Path 2"
+    "bridge2A", "/tmp/obj2_path2.pcap", "", "every frame captured on Path 2"
 )
 test_step(total1 > 0, f"Path 1 carried {total1} frames of any kind", "bridge1A")
 test_step(total2 > 0, f"Path 2 carried {total2} frames of any kind", "bridge2A")
 
-f1 = first_frame("bridge1A", "/tmp/frer_path1.pcap", "Path 1")
-f2 = first_frame("bridge2A", "/tmp/frer_path2.pcap", "Path 2")
+f1 = first_frame("bridge1A", "/tmp/obj2_path1.pcap", "Path 1")
+f2 = first_frame("bridge2A", "/tmp/obj2_path2.pcap", "Path 2")
 log("Path 1 frame 1: %s", f1[:110])
 log("Path 2 frame 1: %s", f2[:110])
 
 for tpid, off in (("0x8100", 12), ("0xf1c1", 12), ("0xf1c1", 16), ("0x88a8", 12)):
     n = pkt_count(
         "bridge1A",
-        "/tmp/frer_path1.pcap",
+        "/tmp/obj2_path1.pcap",
         f"'ether[{off}:2] = {tpid}'",
         f"Path 1 frames with ethertype {tpid} at byte offset {off}",
     )
@@ -216,8 +214,8 @@ for tpid, off in (("0x8100", 12), ("0xf1c1", 12), ("0xf1c1", 16), ("0x88a8", 12)
 
 section("REPLICATION. Both paths carry their own copy of every frame")
 
-p1 = pkt_count("bridge1A", "/tmp/frer_path1.pcap", VID1, "Path 1 frames on VLAN 100")
-p2 = pkt_count("bridge2A", "/tmp/frer_path2.pcap", VID2, "Path 2 frames on VLAN 200")
+p1 = pkt_count("bridge1A", "/tmp/obj2_path1.pcap", VID1, "Path 1 frames on VLAN 100")
+p2 = pkt_count("bridge2A", "/tmp/obj2_path2.pcap", VID2, "Path 2 frames on VLAN 200")
 log("Path 1 carried %s, Path 2 carried %s", p1, p2)
 
 test_step(p1 >= 10, f"Path 1 carried {p1} frames tagged VLAN 100", "bridge1A")
@@ -231,20 +229,22 @@ test_step(
 section("SEPARATION. Each path carries only its own VLAN, never the other's")
 
 x1 = pkt_count(
-    "bridge1A", "/tmp/frer_path1.pcap", VID2, "VLAN 200 frames wrongly on Path 1"
+    "bridge1A", "/tmp/obj2_path1.pcap", VID2,
+    "Path 1 frames on VLAN 200, which belongs to Path 2",
 )
 x2 = pkt_count(
-    "bridge2A", "/tmp/frer_path2.pcap", VID1, "VLAN 100 frames wrongly on Path 2"
+    "bridge2A", "/tmp/obj2_path2.pcap", VID1,
+    "Path 2 frames on VLAN 100, which belongs to Path 1",
 )
 
 test_step(
     p1 > 0 and x1 == 0,
-    f"Path 1 was busy and carried no VLAN 200 frames at all ({x1})",
+    f"Path 1 carried VLAN 100 only, {x1} frames on VLAN 200",
     "bridge1A",
 )
 test_step(
     p2 > 0 and x2 == 0,
-    f"Path 2 was busy and carried no VLAN 100 frames at all ({x2})",
+    f"Path 2 carried VLAN 200 only, {x2} frames on VLAN 100",
     "bridge2A",
 )
 
@@ -252,10 +252,10 @@ test_step(
 section("R-TAG. Every replicated frame carries an 802.1CB sequence tag")
 
 r1 = pkt_count(
-    "bridge1A", "/tmp/frer_path1.pcap", RTAG, "Path 1 frames carrying an 802.1CB R-TAG"
+    "bridge1A", "/tmp/obj2_path1.pcap", RTAG, "Path 1 frames carrying an 802.1CB R-TAG"
 )
 r2 = pkt_count(
-    "bridge2A", "/tmp/frer_path2.pcap", RTAG, "Path 2 frames carrying an 802.1CB R-TAG"
+    "bridge2A", "/tmp/obj2_path2.pcap", RTAG, "Path 2 frames carrying an 802.1CB R-TAG"
 )
 
 test_step(r1 >= 10, f"Path 1 carried {r1} R-TAGged frames", "bridge1A")
@@ -275,11 +275,11 @@ test_step(
 section("ELIMINATION. The listener receives one copy of each frame, not two")
 
 requests = pkt_count(
-    "h2", "/tmp/frer_listener.pcap", ECHO_REQ,
+    "h2", "/tmp/obj2_listener.pcap", ECHO_REQ,
     "ICMP echo requests arriving at the listener",
 )
 replies = pkt_count(
-    "h2", "/tmp/frer_listener.pcap", ECHO_REP,
+    "h2", "/tmp/obj2_listener.pcap", ECHO_REP,
     "ICMP echo replies sent back by the listener",
 )
 log("listener saw %s requests and %s replies", requests, replies)
@@ -293,7 +293,7 @@ test_step(
 )
 
 tagged_at_listener = pkt_count(
-    "h2", "/tmp/frer_listener.pcap", "'ether[12:2] = 0x8100'",
+    "h2", "/tmp/obj2_listener.pcap", "'ether[12:2] = 0x8100'",
     "still-tagged frames arriving at the listener",
 )
 test_step(
@@ -317,27 +317,27 @@ def send_and_count(phase, label):
         stop_capture(t, tag)
 
     fwd1 = pkt_count(
-        "bridge1A", f"/tmp/frer_{phase}-path1.pcap",
+        "bridge1A", f"/tmp/obj2_{phase}-path1.pcap",
         f"'{V1} and ether src {h1_mac}'",
         f"Path 1 frames sent by h1, {label}",
     )
     rev1 = pkt_count(
-        "bridge1A", f"/tmp/frer_{phase}-path1.pcap",
+        "bridge1A", f"/tmp/obj2_{phase}-path1.pcap",
         f"'{V1} and ether src {h2_mac}'",
         f"Path 1 frames sent back by h2, {label}",
     )
     fwd2 = pkt_count(
-        "bridge2A", f"/tmp/frer_{phase}-path2.pcap",
+        "bridge2A", f"/tmp/obj2_{phase}-path2.pcap",
         f"'{V2} and ether src {h1_mac}'",
         f"Path 2 frames sent by h1, {label}",
     )
     rev2 = pkt_count(
-        "bridge2A", f"/tmp/frer_{phase}-path2.pcap",
+        "bridge2A", f"/tmp/obj2_{phase}-path2.pcap",
         f"'{V2} and ether src {h2_mac}'",
         f"Path 2 frames sent back by h2, {label}",
     )
     delivered = pkt_count(
-        "h2", f"/tmp/frer_{phase}-listener.pcap", ECHO_REQ,
+        "h2", f"/tmp/obj2_{phase}-listener.pcap", ECHO_REQ,
         f"requests delivered to the listener, {label}",
     )
     log("%s: path1 fwd %s rev %s, path2 fwd %s rev %s, delivered %s",

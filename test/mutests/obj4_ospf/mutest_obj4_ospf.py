@@ -1,4 +1,4 @@
-"""PREOF over OSPF: equal cost, then Path 2 re-costed."""
+"""Objective 4: PREOF over OSPF, equal cost then Path 2 re-costed."""
 
 import re
 
@@ -12,13 +12,11 @@ from munet.mutest.userapi import wait_step
 
 
 def pkt_count(target, pcap, pfilter="", what="packets"):
-    ok, groups = match_step(
-        target,
-        f"tcpdump -nr {pcap} {pfilter} 2>/dev/null | wc -l",
-        match=r"(\d+)",
-        desc=f"Count {what}",
-    )
-    return int(groups[0]) if ok and groups else 0
+    out = step(target, f"tcpdump -nr {pcap} {pfilter} 2>/dev/null | wc -l")
+    m = re.search(r"(\d+)", out)
+    n = int(m.group(1)) if m else 0
+    log("%s: %s", what, n)
+    return n
 
 
 NO_LOSS = r"\b0% packet loss"
@@ -44,15 +42,15 @@ CAPTURES = [
 
 
 def start_capture(target, iface, tag, pfilter):
-    step(target, f"rm -f /tmp/preof_ospf_{tag}.pcap /tmp/preof_ospf_{tag}.pid")
+    step(target, f"rm -f /tmp/obj4_{tag}.pcap /tmp/obj4_{tag}.pid")
     step(
         target,
-        f"nohup tcpdump -U -Z root -ni {iface} -w /tmp/preof_ospf_{tag}.pcap {pfilter} "
-        f">/tmp/preof_ospf_{tag}.log 2>&1 & echo $! > /tmp/preof_ospf_{tag}.pid",
+        f"nohup tcpdump -U -Z root -ni {iface} -w /tmp/obj4_{tag}.pcap {pfilter} "
+        f">/tmp/obj4_{tag}.log 2>&1 & echo $! > /tmp/obj4_{tag}.pid",
     )
     wait_step(
         target,
-        f"cat /tmp/preof_ospf_{tag}.log",
+        f"cat /tmp/obj4_{tag}.log",
         match=f"listening on {iface}",
         desc=f"tcpdump listening on {iface} for the {tag} capture",
         timeout=15,
@@ -60,10 +58,10 @@ def start_capture(target, iface, tag, pfilter):
 
 
 def stop_capture(target, tag):
-    step(target, f"kill -INT $(cat /tmp/preof_ospf_{tag}.pid)")
+    step(target, f"kill -INT $(cat /tmp/obj4_{tag}.pid)")
     wait_step(
         target,
-        f"kill -0 $(cat /tmp/preof_ospf_{tag}.pid) 2>/dev/null; echo rc=$?",
+        f"kill -0 $(cat /tmp/obj4_{tag}.pid) 2>/dev/null; echo rc=$?",
         match="rc=1",
         desc=f"The {tag} capture flushed to disk and stopped",
         timeout=15,
@@ -287,13 +285,13 @@ section("REPLICATION. Both paths carry their own copy of every packet")
 
 p1 = pkt_count(
     "bridge1A",
-    "/tmp/preof_ospf_path1.pcap",
+    "/tmp/obj4_path1.pcap",
     "'dst host 10.1.3.2'",
     "Path 1 packets travelling toward bridgeB",
 )
 p2 = pkt_count(
     "bridge2A",
-    "/tmp/preof_ospf_path2.pcap",
+    "/tmp/obj4_path2.pcap",
     "'dst host 10.2.3.2'",
     "Path 2 packets travelling toward bridgeB",
 )
@@ -311,13 +309,13 @@ section("SEPARATION. Each path carries only its own MPLS label, never the other"
 
 l100 = pkt_count(
     "bridge1A",
-    "/tmp/preof_ospf_path1.pcap",
+    "/tmp/obj4_path1.pcap",
     "'udp[8:2] = 0x0006 and udp[10] & 0xf0 = 0x40'",
     "Path 1 packets carrying MPLS label 100",
 )
 l200 = pkt_count(
     "bridge2A",
-    "/tmp/preof_ospf_path2.pcap",
+    "/tmp/obj4_path2.pcap",
     "'udp[8:2] = 0x000c and udp[10] & 0xf0 = 0x80'",
     "Path 2 packets carrying MPLS label 200",
 )
@@ -335,14 +333,14 @@ test_step(
 
 match_step(
     "bridge1A",
-    "tcpdump -nr /tmp/preof_ospf_path1.pcap 'udp[8:2] = 0x000c' 2>/dev/null",
+    "tcpdump -nr /tmp/obj4_path1.pcap 'udp[8:2] = 0x000c' 2>/dev/null",
     match=r"IP ",
     expect_fail=True,
     desc="No label 200 packet ever appeared on Path 1",
 )
 match_step(
     "bridge2A",
-    "tcpdump -nr /tmp/preof_ospf_path2.pcap 'udp[8:2] = 0x0006' 2>/dev/null",
+    "tcpdump -nr /tmp/obj4_path2.pcap 'udp[8:2] = 0x0006' 2>/dev/null",
     match=r"IP ",
     expect_fail=True,
     desc="No label 100 packet ever appeared on Path 2",
@@ -353,13 +351,13 @@ section("ELIMINATION. The listener receives one copy of each packet, not two")
 
 requests = pkt_count(
     "h2",
-    "/tmp/preof_ospf_listener.pcap",
+    "/tmp/obj4_listener.pcap",
     "'icmp[icmptype] = 8 or (vlan and icmp[icmptype] = 8)'",
     "ICMP echo requests arriving at the listener",
 )
 replies = pkt_count(
     "h2",
-    "/tmp/preof_ospf_listener.pcap",
+    "/tmp/obj4_listener.pcap",
     "'icmp[icmptype] = 0 or (vlan and icmp[icmptype] = 0)'",
     "ICMP echo replies sent back by the listener",
 )
@@ -374,7 +372,7 @@ test_step(
 )
 
 
-section("A Path 1 link failure reroutes through OSPF with no packet loss")
+section("PATH 1 FAILS. Delivery survives on member 2, not on the OSPF reroute")
 
 step("bridge1A", "ip link set eth1 down")
 
@@ -382,19 +380,52 @@ wait_step(
     "bridgeA",
     "ip route get 10.1.3.2",
     match=r"via 10\.2\.1\.2 dev eth2",
-    desc="OSPF moved tunnel endpoint 10.1.3.2 onto eth2 by itself",
+    desc="OSPF moved the route for 10.1.3.2 onto eth2 by itself",
     timeout=120,
 )
 
-failover = step("h1", "ping -c 5 -W 1 10.0.0.2")
-test_step(no_loss(failover), "0% loss with Path 1 down, delivery unaffected", "h1")
-test_step("DUP!" not in failover, "No duplicate replies while Path 1 is down", "h1")
+FAIL_CAPTURES = [
+    ("bridge1A", "eth0", "fail-path1", "'udp port 6635'"),
+    ("bridge2A", "eth1", "fail-path2", "'udp port 6635'"),
+]
 
-reroute = step("bridgeA", "ip route get 10.1.3.2; ip route get 10.2.3.2")
-both_out_eth2 = len(re.findall(r"dev eth2", reroute)) == 2
+for target, iface, tag, pfilter in FAIL_CAPTURES:
+    start_capture(target, iface, tag, pfilter)
+
+failover = step("h1", "ping -c 5 -W 1 10.0.0.2")
+step("h1", "sleep 2")
+
+for target, _, tag, _ in FAIL_CAPTURES:
+    stop_capture(target, tag)
+
+f1 = pkt_count(
+    "bridge1A",
+    "/tmp/obj4_fail-path1.pcap",
+    "",
+    "packets still arriving at bridge1A from bridgeA",
+)
+f2 = pkt_count(
+    "bridge2A",
+    "/tmp/obj4_fail-path2.pcap",
+    "'udp[8:2] = 0x000c and udp[10] & 0xf0 = 0x80'",
+    "label 200 packets still crossing Path 2",
+)
+log("into bridge1A %s, label200 on path2 %s", f1, f2)
+
+test_step(no_loss(failover), "0% loss with Path 1 down", "h1")
+test_step("DUP!" not in failover, "No duplicate replies while Path 1 is down", "h1")
+test_step(f2 > 0, f"Path 2 still carried {f2} label 200 packets", "bridge2A")
 test_step(
-    both_out_eth2,
-    "Both tunnel endpoints now sit on eth2, so the copies are no longer disjoint",
+    f2 > 0 and f1 == 0,
+    f"Member 1 never left bridgeA, {f1} packets reached bridge1A",
+    "bridgeA",
+)
+
+route_moved = step("bridgeA", "ip route get 10.1.3.2; ip route get 10.2.3.2")
+both_out_eth2 = len(re.findall(r"dev eth2", route_moved)) == 2
+test_step(
+    both_out_eth2 and f1 == 0,
+    "Both routes now point out eth2, but member 1 stays pinned to eth1",
     "bridgeA",
 )
 
@@ -404,7 +435,7 @@ wait_step(
     "bridgeA",
     "ip route get 10.1.3.2",
     match=r"via 10\.1\.1\.2 dev eth1",
-    desc="OSPF restored Path 1 on its own, with no manual repair",
+    desc="OSPF restored the route for 10.1.3.2 with no manual repair",
     timeout=120,
 )
 
@@ -466,25 +497,25 @@ section("REDUNDANCY IS GONE. Only one copy now reaches the wire at all")
 
 c1 = pkt_count(
     "bridge1A",
-    "/tmp/preof_ospf_cost-path1.pcap",
+    "/tmp/obj4_cost-path1.pcap",
     "",
     "Path 1 packets after the cost change",
 )
 c2 = pkt_count(
     "bridge2A",
-    "/tmp/preof_ospf_cost-path2.pcap",
+    "/tmp/obj4_cost-path2.pcap",
     "",
     "Path 2 packets after the cost change",
 )
 c100 = pkt_count(
     "bridge1A",
-    "/tmp/preof_ospf_cost-path1.pcap",
+    "/tmp/obj4_cost-path1.pcap",
     "'udp[8:2] = 0x0006 and udp[10] & 0xf0 = 0x40'",
     "label 100 packets on Path 1 after the cost change",
 )
 c200 = pkt_count(
     "bridge1A",
-    "/tmp/preof_ospf_cost-path1.pcap",
+    "/tmp/obj4_cost-path1.pcap",
     "'udp[8:2] = 0x000c and udp[10] & 0xf0 = 0x80'",
     "label 200 packets on Path 1 after the cost change",
 )
@@ -516,13 +547,13 @@ section("Delivery still succeeds, on the single surviving copy")
 
 c_req = pkt_count(
     "h2",
-    "/tmp/preof_ospf_cost-listener.pcap",
+    "/tmp/obj4_cost-listener.pcap",
     "'icmp[icmptype] = 8 or (vlan and icmp[icmptype] = 8)'",
     "ICMP echo requests still arriving at the listener",
 )
 c_rep = pkt_count(
     "h2",
-    "/tmp/preof_ospf_cost-listener.pcap",
+    "/tmp/obj4_cost-listener.pcap",
     "'icmp[icmptype] = 0 or (vlan and icmp[icmptype] = 0)'",
     "ICMP echo replies still sent by the listener",
 )
@@ -590,13 +621,13 @@ for target, _, tag, _ in BACK_CAPTURES:
 
 b1 = pkt_count(
     "bridge1A",
-    "/tmp/preof_ospf_back-path1.pcap",
+    "/tmp/obj4_back-path1.pcap",
     "",
     "Path 1 packets once the costs were restored",
 )
 b2 = pkt_count(
     "bridge2A",
-    "/tmp/preof_ospf_back-path2.pcap",
+    "/tmp/obj4_back-path2.pcap",
     "",
     "Path 2 packets once the costs were restored",
 )

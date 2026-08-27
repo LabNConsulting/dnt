@@ -1,4 +1,4 @@
-"""PREOF over an MPLS-over-UDP data plane with static routes."""
+"""Objective 3: PREOF over static routes, no FRR."""
 
 import re
 
@@ -12,13 +12,11 @@ from munet.mutest.userapi import wait_step
 
 
 def pkt_count(target, pcap, pfilter="", what="packets"):
-    ok, groups = match_step(
-        target,
-        f"tcpdump -nr {pcap} {pfilter} 2>/dev/null | wc -l",
-        match=r"(\d+)",
-        desc=f"Count {what}",
-    )
-    return int(groups[0]) if ok and groups else 0
+    out = step(target, f"tcpdump -nr {pcap} {pfilter} 2>/dev/null | wc -l")
+    m = re.search(r"(\d+)", out)
+    n = int(m.group(1)) if m else 0
+    log("%s: %s", what, n)
+    return n
 
 
 NO_LOSS = r"\b0% packet loss"
@@ -36,15 +34,15 @@ CAPTURES = [
 
 
 def start_capture(target, iface, tag, pfilter):
-    step(target, f"rm -f /tmp/preof_{tag}.pcap /tmp/preof_{tag}.pid")
+    step(target, f"rm -f /tmp/obj3_{tag}.pcap /tmp/obj3_{tag}.pid")
     step(
         target,
-        f"nohup tcpdump -U -Z root -ni {iface} -w /tmp/preof_{tag}.pcap {pfilter} "
-        f">/tmp/preof_{tag}.log 2>&1 & echo $! > /tmp/preof_{tag}.pid",
+        f"nohup tcpdump -U -Z root -ni {iface} -w /tmp/obj3_{tag}.pcap {pfilter} "
+        f">/tmp/obj3_{tag}.log 2>&1 & echo $! > /tmp/obj3_{tag}.pid",
     )
     wait_step(
         target,
-        f"cat /tmp/preof_{tag}.log",
+        f"cat /tmp/obj3_{tag}.log",
         match=f"listening on {iface}",
         desc=f"tcpdump listening on {iface} for the {tag} capture",
         timeout=15,
@@ -52,10 +50,10 @@ def start_capture(target, iface, tag, pfilter):
 
 
 def stop_capture(target, tag):
-    step(target, f"kill -INT $(cat /tmp/preof_{tag}.pid)")
+    step(target, f"kill -INT $(cat /tmp/obj3_{tag}.pid)")
     wait_step(
         target,
-        f"kill -0 $(cat /tmp/preof_{tag}.pid) 2>/dev/null; echo rc=$?",
+        f"kill -0 $(cat /tmp/obj3_{tag}.pid) 2>/dev/null; echo rc=$?",
         match="rc=1",
         desc=f"The {tag} capture flushed to disk and stopped",
         timeout=15,
@@ -204,13 +202,13 @@ section("REPLICATION. Both paths carry their own copy of every packet")
 
 p1 = pkt_count(
     "bridge1A",
-    "/tmp/preof_path1.pcap",
+    "/tmp/obj3_path1.pcap",
     "'dst host 10.1.3.2'",
     "Path 1 packets travelling toward bridgeB",
 )
 p2 = pkt_count(
     "bridge2A",
-    "/tmp/preof_path2.pcap",
+    "/tmp/obj3_path2.pcap",
     "'dst host 10.2.3.2'",
     "Path 2 packets travelling toward bridgeB",
 )
@@ -228,13 +226,13 @@ section("SEPARATION. Each path carries only its own MPLS label, never the other"
 
 l100 = pkt_count(
     "bridge1A",
-    "/tmp/preof_path1.pcap",
+    "/tmp/obj3_path1.pcap",
     "'udp[8:2] = 0x0006 and udp[10] & 0xf0 = 0x40'",
     "Path 1 packets carrying MPLS label 100",
 )
 l200 = pkt_count(
     "bridge2A",
-    "/tmp/preof_path2.pcap",
+    "/tmp/obj3_path2.pcap",
     "'udp[8:2] = 0x000c and udp[10] & 0xf0 = 0x80'",
     "Path 2 packets carrying MPLS label 200",
 )
@@ -252,14 +250,14 @@ test_step(
 
 match_step(
     "bridge1A",
-    "tcpdump -nr /tmp/preof_path1.pcap 'udp[8:2] = 0x000c' 2>/dev/null",
+    "tcpdump -nr /tmp/obj3_path1.pcap 'udp[8:2] = 0x000c' 2>/dev/null",
     match=r"IP ",
     expect_fail=True,
     desc="No label 200 packet ever appeared on Path 1",
 )
 match_step(
     "bridge2A",
-    "tcpdump -nr /tmp/preof_path2.pcap 'udp[8:2] = 0x0006' 2>/dev/null",
+    "tcpdump -nr /tmp/obj3_path2.pcap 'udp[8:2] = 0x0006' 2>/dev/null",
     match=r"IP ",
     expect_fail=True,
     desc="No label 100 packet ever appeared on Path 2",
@@ -270,13 +268,13 @@ section("ELIMINATION. The listener receives one copy of each packet, not two")
 
 requests = pkt_count(
     "h2",
-    "/tmp/preof_listener.pcap",
+    "/tmp/obj3_listener.pcap",
     "'icmp[icmptype] = 8 or (vlan and icmp[icmptype] = 8)'",
     "ICMP echo requests arriving at the listener",
 )
 replies = pkt_count(
     "h2",
-    "/tmp/preof_listener.pcap",
+    "/tmp/obj3_listener.pcap",
     "'icmp[icmptype] = 0 or (vlan and icmp[icmptype] = 0)'",
     "ICMP echo replies sent back by the listener",
 )
